@@ -1,0 +1,3 @@
+Rainmeter Screen Brightness Plugin
+----------------------------------
+
