@@ -1,8 +1,8 @@
-﻿
+﻿// credits: http://edgylogic.com/projects/display-brightness-vista-gadget/
 #define DLLEXPORT_EXECUTEBANG
 
 using System;
-using System.Text;
+using System.Management;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using Rainmeter;
@@ -11,17 +11,41 @@ namespace ScreenBrightnessPlugin
 {
     internal class Measure
     {
+        private ManagementObject brightnessInfo;
+        private ManagementObject brightnessMethods;
+        private byte[] levels;
+
         internal Measure()
-        {
+        {   
+            brightnessInfo = getWmiRootObject("WmiMonitorBrightness");
+            brightnessMethods = getWmiRootObject("WmiMonitorBrightnessMethods");
         }
 
         internal void Reload(Rainmeter.API api, ref double maxValue)
         {
+            if (brightnessInfo != null)
+            {
+                levels = getBrightnessLevels();
+                maxValue = levels[levels.Length - 1];
+            }
+            else
+            {
+                API.Log(API.LogType.Error, "ScreenBrightness.dll: (In reload) Could not get WmiMonitorBrightness");
+            }
+            
         }
 
         internal double Update()
         {
-            return 0.0;
+            if (brightnessInfo != null)
+            {
+                return getBrightness();
+            }
+            else
+            {
+                API.Log(API.LogType.Error, "ScreenBrightness.dll: (In update) Could not get WmiMonitorBrightness");
+                return 0.0;
+            }
         }
         
 #if DLLEXPORT_GETSTRING
@@ -34,8 +58,44 @@ namespace ScreenBrightnessPlugin
 #if DLLEXPORT_EXECUTEBANG
         internal void ExecuteBang(string args)
         {
+            // increase
+            // decrease
+            // set <level>
         }
 #endif
+
+        private byte getBrightness()
+        {
+            return (byte)brightnessInfo.GetPropertyValue("CurrentBrightness");
+        }
+
+        private byte[] getBrightnessLevels()
+        {
+            return (byte[])brightnessInfo.GetPropertyValue("Level");
+        }
+
+        private void setBrightness(byte targetBrightness)
+        {
+            brightnessMethods.InvokeMethod("WmiSetBrightness", new Object[] { UInt32.MaxValue, targetBrightness });
+        }
+
+        /* There really must be a better way.  I know there is. */
+        private static ManagementObject getWmiRootObject(string which)
+        {
+            ManagementScope s = new ManagementScope("root\\WMI");
+            SelectQuery q = new SelectQuery(which);
+            ManagementObjectSearcher mos = new ManagementObjectSearcher(s, q);
+            ManagementObjectCollection moc = mos.Get();
+            ManagementObject res = null;
+            foreach (ManagementObject o in moc)
+            {
+                res = o;
+                break;
+            }
+            mos.Dispose();
+            moc.Dispose();
+            return res;
+        }
     }
 
     public static class Plugin
