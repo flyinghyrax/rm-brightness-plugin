@@ -1,4 +1,15 @@
-﻿// credits: http://edgylogic.com/projects/display-brightness-vista-gadget/
+﻿/*
+ * Current state: returns correct value initially but does not update. Need to re-run WMI object query every update?
+ * TODO:
+ * - Detect support of WmiMonitorBrightness* (a.k.a. actual error handling)
+ * - IfNotSupportedAction measure option
+ * - Requery every update cycle
+ * - Multithread updates so that repeated wmi queries don't bog down Rainmeter
+ * - increase/decrease bangs
+ * - set <level> bang (dangerous, not all devices support all levels?)
+ * - revert bang (WmiRevertTopolicyBrightness)
+ * credits: http://edgylogic.com/projects/display-brightness-vista-gadget/
+ */
 #define DLLEXPORT_EXECUTEBANG
 
 using System;
@@ -60,7 +71,8 @@ namespace ScreenBrightnessPlugin
         {
             // increase
             // decrease
-            // set <level>
+            // set <level> (?)
+            // revert
         }
 #endif
 
@@ -82,18 +94,33 @@ namespace ScreenBrightnessPlugin
         /* There really must be a better way.  I know there is. */
         private static ManagementObject getWmiRootObject(string which)
         {
-            ManagementScope s = new ManagementScope("root\\WMI");
-            SelectQuery q = new SelectQuery(which);
-            ManagementObjectSearcher mos = new ManagementObjectSearcher(s, q);
-            ManagementObjectCollection moc = mos.Get();
             ManagementObject res = null;
-            foreach (ManagementObject o in moc)
+            ManagementObjectSearcher mos = null;
+            ManagementObjectCollection moc = null;
+            try
             {
-                res = o;
-                break;
+                ManagementScope s = new ManagementScope("\\\\.\\root\\WMI");
+                SelectQuery q = new SelectQuery(which);
+                mos = new ManagementObjectSearcher(s, q);
+                moc = mos.Get();
+
+                foreach (ManagementObject o in moc)
+                {
+                    res = o;
+                    break;
+                }
             }
-            mos.Dispose();
-            moc.Dispose();
+            catch (ManagementException mex)
+            {
+                API.Log(API.LogType.Error, mex.Message);
+            }
+            finally
+            {
+                if (mos != null)
+                    mos.Dispose();
+                if (moc != null)
+                    moc.Dispose();
+            }
             return res;
         }
     }
