@@ -1,7 +1,6 @@
 ﻿/*
  * Current state: returns correct value initially but does not update. Need to re-run WMI object query every update?
  * TODO:
- * - Detect support of WmiMonitorBrightness* (a.k.a. actual error handling)
  * - IfNotSupportedAction measure option
  * - Requery every update cycle
  * - Multithread updates so that repeated wmi queries don't bog down Rainmeter
@@ -22,41 +21,26 @@ namespace ScreenBrightnessPlugin
 {
     internal class Measure
     {
-        private ManagementObject brightnessInfo;
-        private ManagementObject brightnessMethods;
-        private byte[] levels;
+        private Monitor m;
 
         internal Measure()
-        {   
-            brightnessInfo = getWmiRootObject("WmiMonitorBrightness");
-            brightnessMethods = getWmiRootObject("WmiMonitorBrightnessMethods");
+        {
+            m = new Monitor();
         }
 
         internal void Reload(Rainmeter.API api, ref double maxValue)
         {
-            if (brightnessInfo != null)
+            m.reload();
+            maxValue = m.MaxLevel;
+            if (!m.Supported)
             {
-                levels = getBrightnessLevels();
-                maxValue = levels[levels.Length - 1];
+                API.Log(API.LogType.Warning, "Screenbrightness: not supported by this system configuration");
             }
-            else
-            {
-                API.Log(API.LogType.Error, "ScreenBrightness.dll: (In reload) Could not get WmiMonitorBrightness");
-            }
-            
         }
 
         internal double Update()
         {
-            if (brightnessInfo != null)
-            {
-                return getBrightness();
-            }
-            else
-            {
-                API.Log(API.LogType.Error, "ScreenBrightness.dll: (In update) Could not get WmiMonitorBrightness");
-                return 0.0;
-            }
+            return m.getCurrentBrightness();
         }
         
 #if DLLEXPORT_GETSTRING
@@ -75,53 +59,118 @@ namespace ScreenBrightnessPlugin
             // revert
         }
 #endif
-
-        private byte getBrightness()
+        internal static ManagementObject getWmiObject(string which)
         {
-            return (byte)brightnessInfo.GetPropertyValue("CurrentBrightness");
+            ManagementObject mobj = null;
+            ManagementObjectCollection moc = null;
+            try
+            {
+                ManagementClass mc = new ManagementClass("root\\WMI", which, null);
+                moc = mc.GetInstances();
+                foreach (ManagementObject m in moc)
+                {
+                    mobj = m;
+                    break;
+                }
+            }
+            catch (ManagementException)
+            {
+                mobj = null;
+            }
+            finally
+            {
+                if (moc != null)
+                {
+                    moc.Dispose();
+                }
+            }
+            return mobj;
+        }
+    }
+
+    internal class Monitor
+    {
+        private ManagementObject brightnessMethods;
+        private byte[] brightnessLevels;
+        private int levelIndex = 0;
+        
+        // maximum brightness level, determined from levels array
+        private byte _maxLevel;
+        internal double MaxLevel
+        {
+            get
+            {
+                return (double)(_maxLevel);
+            }
+        }
+
+        // indicates whether or not the plugin is actually supported
+        private bool _supported;
+        internal bool Supported
+        {
+            get
+            {
+                return this._supported;
+            }
+        }
+
+        public Monitor()
+        {
+            // initialization
+            this.levelIndex = 0;
+            this._maxLevel = 0;
+            this._supported = false;
+            // get actual values
+            this.reload();
+        }
+
+        internal void reload()
+        {
+            brightnessMethods = Measure.getWmiObject("WmiMonitorBrightnessMethods");
+            this._supported = (this.brightnessMethods == null ? false : true);
+            if (this.Supported)
+            {
+                brightnessLevels = getBrightnessLevels();
+                Array.Sort(brightnessLevels);
+                this._maxLevel = brightnessLevels[brightnessLevels.Length - 1];
+            }
+        }
+
+        internal double getCurrentBrightness()
+        {
+            if (this.Supported)
+            {
+                ManagementObject monitorInfo = Measure.getWmiObject("WmiMonitorBrightness");
+                byte level = (byte)(monitorInfo.GetPropertyValue("CurrentBrightness"));
+                return (double)(level);
+            }
+            else
+            {
+                return 0.0;
+            }
+        }
+
+        internal void raiseBrightness()
+        {
+            // TODO
+        }
+
+        internal void lowerBrightness()
+        {
+            // TODO
         }
 
         private byte[] getBrightnessLevels()
         {
-            return (byte[])brightnessInfo.GetPropertyValue("Level");
-        }
-
-        private void setBrightness(byte targetBrightness)
-        {
-            brightnessMethods.InvokeMethod("WmiSetBrightness", new Object[] { UInt32.MaxValue, targetBrightness });
-        }
-
-        /* There really must be a better way.  I know there is. */
-        private static ManagementObject getWmiRootObject(string which)
-        {
-            ManagementObject res = null;
-            ManagementObjectSearcher mos = null;
-            ManagementObjectCollection moc = null;
-            try
+            if (this.Supported)
             {
-                ManagementScope s = new ManagementScope("\\\\.\\root\\WMI");
-                SelectQuery q = new SelectQuery(which);
-                mos = new ManagementObjectSearcher(s, q);
-                moc = mos.Get();
-
-                foreach (ManagementObject o in moc)
-                {
-                    res = o;
-                    break;
-                }
+                ManagementObject monitorInfo = Measure.getWmiObject("WmiMonitorBrightness");
+                return (byte[])(monitorInfo.GetPropertyValue("Level"));
             }
-            catch (ManagementException mex)
+            else
             {
-                API.Log(API.LogType.Error, mex.Message);
+                return new byte[0];
             }
-            finally
-            {
-                if (mos != null)
-                    mos.Dispose();
-                if (moc != null)
-                    moc.Dispose();
-            }
-            return res;
         }
     }
 
