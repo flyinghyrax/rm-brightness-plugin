@@ -1,12 +1,10 @@
 ﻿/*
- * Current state: returns correct value initially but does not update. Need to re-run WMI object query every update?
+ * Note: as far as I can tell, this will only work on WinVista and higher
  * TODO:
+ * - improve findLevelIndex
  * - IfNotSupportedAction measure option
- * - Requery every update cycle
  * - Multithread updates so that repeated wmi queries don't bog down Rainmeter
- * - increase/decrease bangs
- * - set <level> bang (dangerous, not all devices support all levels?)
- * - revert bang (WmiRevertTopolicyBrightness)
+ * - multi-monitor testing and support
  * credits: http://edgylogic.com/projects/display-brightness-vista-gadget/
  */
 #define DLLEXPORT_EXECUTEBANG
@@ -40,7 +38,8 @@ namespace ScreenBrightnessPlugin
 
         internal double Update()
         {
-            return m.getCurrentBrightness();
+            m.syncBrightnessIndex();
+            return (double)(m.CurrentBrightness);
         }
         
 #if DLLEXPORT_GETSTRING
@@ -53,12 +52,38 @@ namespace ScreenBrightnessPlugin
 #if DLLEXPORT_EXECUTEBANG
         internal void ExecuteBang(string args)
         {
-            // increase
-            // decrease
-            // set <level> (?)
-            // revert
+            string a = args.ToLowerInvariant();
+            if (a.Equals("increase"))
+            {
+                m.raiseBrightness();
+            }
+            else if (a.Equals("decrease"))
+            {
+                m.lowerBrightness();
+            }
+            else if (a.Substring(0, 3).Equals("set"))
+            {
+                try
+                {
+                    string sub = a.Substring(4);
+                    byte target = byte.Parse(sub);
+                    m.setBrightness(target);
+                }
+                catch (Exception ex)
+                {
+                    API.Log(API.LogType.Error, "ScreenBrightness.dll: Unable to parse brightness in \"" + a + "\"");
+#if DEBUG
+                    API.Log(API.LogType.Debug, ex.Message);
+#endif
+                }
+            }
+            else
+            {
+                API.Log(API.LogType.Error, "ScreenBrightness.dll: Invalid command \"" + args + "\"");
+            }
         }
 #endif
+
         internal static ManagementObject getWmiObject(string which)
         {
             ManagementObject mobj = null;
@@ -92,19 +117,8 @@ namespace ScreenBrightnessPlugin
     {
         private ManagementObject brightnessMethods;
         private byte[] brightnessLevels;
-        private int levelIndex = 0;
-        
-        // maximum brightness level, determined from levels array
-        private byte _maxLevel;
-        internal double MaxLevel
-        {
-            get
-            {
-                return (double)(_maxLevel);
-            }
-        }
+        private int brightnessIndex = 0;
 
-        // indicates whether or not the plugin is actually supported
         private bool _supported;
         internal bool Supported
         {
@@ -114,10 +128,27 @@ namespace ScreenBrightnessPlugin
             }
         }
 
+        private byte _maxLevel;
+        internal double MaxLevel
+        {
+            get
+            {
+                return (double)(_maxLevel);
+            }
+        }
+
+        internal byte CurrentBrightness
+        {
+            get
+            {
+                return this.getCurrentBrightness();
+            }
+        }
+
         public Monitor()
         {
             // initialization
-            this.levelIndex = 0;
+            this.brightnessIndex = 0;
             this._maxLevel = 0;
             this._supported = false;
             // get actual values
@@ -127,39 +158,122 @@ namespace ScreenBrightnessPlugin
         internal void reload()
         {
             brightnessMethods = Measure.getWmiObject("WmiMonitorBrightnessMethods");
-            this._supported = (this.brightnessMethods == null ? false : true);
+            this._supported = this.brightnessMethods != null;
             if (this.Supported)
             {
                 brightnessLevels = getBrightnessLevels();
                 Array.Sort(brightnessLevels);
                 this._maxLevel = brightnessLevels[brightnessLevels.Length - 1];
+                syncBrightnessIndex();
             }
         }
 
-        internal double getCurrentBrightness()
+        /// <summary>
+        /// Gets the current brightness level from WIM
+        /// </summary>
+        /// <returns>Current brightness as type 'byte'</returns>
+        private byte getCurrentBrightness()
         {
             if (this.Supported)
             {
                 ManagementObject monitorInfo = Measure.getWmiObject("WmiMonitorBrightness");
                 byte level = (byte)(monitorInfo.GetPropertyValue("CurrentBrightness"));
-                return (double)(level);
+                return level;
             }
             else
             {
-                return 0.0;
+                return 0;
             }
         }
 
+        /// <summary>
+        /// Set the current brightness to one level above the current level
+        /// </summary>
         internal void raiseBrightness()
         {
-            // TODO
+            if (this.Supported)
+            {
+                int maxIndex = this.brightnessLevels.Length - 1;
+                // assume we are already at max brightness
+                byte target = brightnessLevels[maxIndex];
+                // if the above is not true, update target and index
+                if (brightnessIndex < maxIndex)
+                {
+                    brightnessIndex += 1;
+                    target = brightnessLevels[brightnessIndex];
+                    
+                }
+                setBrightness(target);
+            }
         }
 
+        /// <summary>
+        /// Set the current brightness to one level below the current level
+        /// </summary>
         internal void lowerBrightness()
         {
-            // TODO
+            if (this.Supported)
+            {
+                byte target = brightnessLevels[0];
+                if (brightnessIndex > 0)
+                {
+                    brightnessIndex -= 1;
+                    target = brightnessLevels[brightnessIndex];
+                }
+                setBrightness(target);
+            }
         }
 
+        /// <summary>
+        /// Sets the current brightness to the supported level closest to an arbitrary specified level
+        /// </summary>
+        /// <param name="level">Target level, may not be a supported brightness level</param>
+        internal void setBrightness(byte level)
+        {
+            if (this.Supported)
+            {
+                int i = findLevelIndex(level, brightnessLevels);
+                brightnessMethods.InvokeMethod("WmiSetBrightness", new Object[] { 10, brightnessLevels[i] });
+            }
+        }
+
+        /// <summary>
+        /// Synchronize the index in the supported levels array to the current actual brightness
+        /// </summary>
+        internal void syncBrightnessIndex()
+        {
+            byte currentBrightness = getCurrentBrightness();
+            brightnessIndex = findLevelIndex(currentBrightness, brightnessLevels);
+        }
+
+        /// <summary>
+        /// Finds the index of supported level closest to but still greater than specified level.
+        /// TODO: Actual closest supported level, not closest-but-greater
+        /// </summary>
+        /// <param name="level">Brightness level to look for</param>
+        /// <param name="levels">Array of levels to look in</param>
+        /// <returns>integer index of closest supported level to the input level (default 0)</returns>
+        private int findLevelIndex(byte level, byte[] levels)
+        {
+            int li = 0;
+            for (int i = 0; i < levels.Length; i += 1)
+            {
+                if (levels[i] > level)
+                {
+                    break;
+                }
+                else
+                {
+                    li += 1;
+                }
+            }
+            return li;
+        }
+
+        /// <summary>
+        /// Retreives an array of supported brightness levels from WMI
+        /// </summary>
+        /// <returns>byte[] of supported brightness levels</returns>
         private byte[] getBrightnessLevels()
         {
             if (this.Supported)
