@@ -1,9 +1,5 @@
 ﻿/*
  * Note: as far as I can tell, this will only work on WinVista and higher
- * TODO:
- * - cache "supported" state in Measure, only fire If[Not]SupportedAction on *change*
- * - Multithread updates so that repeated wmi queries don't bog down Rainmeter
- * - multi-monitor testing and support
  * credits: http://edgylogic.com/projects/display-brightness-vista-gadget/
  */
 #define DLLEXPORT_EXECUTEBANG
@@ -27,19 +23,8 @@ namespace ScreenBrightnessPlugin
 
         internal void Reload(Rainmeter.API api, ref double maxValue)
         {
-            string notSupportedAction = api.ReadString("IfNotSupportedAction", "");
-
             m.reload();
             maxValue = m.MaxLevel;
-
-            if (!m.Supported)
-            {
-                API.Log(API.LogType.Warning, "ScreenBrightness.dll: not supported by this system configuration");
-                if (!String.IsNullOrEmpty(notSupportedAction))
-                {
-                    API.Execute(api.GetSkin(), notSupportedAction);
-                }
-            }
         }
 
         internal double Update()
@@ -93,19 +78,7 @@ namespace ScreenBrightnessPlugin
     {
         private ManagementObject brightnessMethods;
         private byte[] brightnessLevels;
-        private int brightnessIndex = 0;
-        private bool supported;
-
-        /// <summary>
-        /// Indicates whether or not WMI MonitorBrightness operations are currently supported
-        /// </summary>
-        internal bool Supported
-        {
-            get
-            {
-                return this.supported;
-            }
-        }
+        private int brightnessIndex;
 
         /// <summary>
         /// Retrieves the maximum brightness level if supported
@@ -114,14 +87,7 @@ namespace ScreenBrightnessPlugin
         {
             get
             {
-                if (this.Supported)
-                {
-                    return (double)(brightnessLevels[brightnessLevels.Length - 1]);
-                }
-                else
-                {
-                    return 0.0;
-                }
+                return (double)(brightnessLevels[brightnessLevels.Length - 1]);
             }
         }
 
@@ -132,23 +98,15 @@ namespace ScreenBrightnessPlugin
         {
             get
             {
-                if (this.Supported)
-                {
-                    ManagementObject monitorInfo = getWmiObject("WmiMonitorBrightness");
-                    byte level = (byte)(monitorInfo.GetPropertyValue("CurrentBrightness"));
-                    return level;
-                }
-                else
-                {
-                    return 0;
-                }
+                ManagementObject monitorInfo = getWmiObject("WmiMonitorBrightness");
+                return (monitorInfo == null ?
+                    (byte)(0) :
+                    (byte)(monitorInfo.GetPropertyValue("CurrentBrightness")));
             }
         }
 
         public Screen()
         {
-            // ThreadPool.SetMaxThreads(3, 1);
-            this.supported = false;
             this.brightnessLevels = new byte[] { 0 };
             this.brightnessIndex = 0;   
         }
@@ -159,18 +117,9 @@ namespace ScreenBrightnessPlugin
         internal void reload()
         {
             brightnessMethods = getWmiObject("WmiMonitorBrightnessMethods");
-            this.supported = this.brightnessMethods != null;
-            if (this.Supported)
-            {
-                brightnessLevels = getBrightnessLevels();
-                Array.Sort(brightnessLevels);
-                syncBrightnessIndex();
-            }
-            else
-            {
-                this.brightnessLevels = new byte[] { 0 };
-                this.brightnessIndex = 0;
-            }
+            brightnessLevels = getBrightnessLevels();
+            Array.Sort(brightnessLevels);
+            syncBrightnessIndex();
         }
 
         /// <summary>
@@ -178,18 +127,15 @@ namespace ScreenBrightnessPlugin
         /// </summary>
         internal void raiseBrightness()
         {
-            if (this.Supported)
+            int maxIndex = this.brightnessLevels.Length - 1;
+            // assume we are already at max brightness
+            byte target = brightnessLevels[maxIndex];
+            // if the above is not true, update target and index
+            if (brightnessIndex < maxIndex)
             {
-                int maxIndex = this.brightnessLevels.Length - 1;
-                // assume we are already at max brightness
-                byte target = brightnessLevels[maxIndex];
-                // if the above is not true, update target and index
-                if (brightnessIndex < maxIndex)
-                {
-                    brightnessIndex += 1;
-                    target = brightnessLevels[brightnessIndex];
-                    setBrightness(target);
-                }
+                brightnessIndex += 1;
+                target = brightnessLevels[brightnessIndex];
+                setBrightness(target);
             }
         }
 
@@ -198,15 +144,12 @@ namespace ScreenBrightnessPlugin
         /// </summary>
         internal void lowerBrightness()
         {
-            if (this.Supported)
+            byte target = brightnessLevels[0];
+            if (brightnessIndex > 0)
             {
-                byte target = brightnessLevels[0];
-                if (brightnessIndex > 0)
-                {
-                    brightnessIndex -= 1;
-                    target = brightnessLevels[brightnessIndex];
-                    setBrightness(target);
-                }
+                brightnessIndex -= 1;
+                target = brightnessLevels[brightnessIndex];
+                setBrightness(target);
             }
         }
 
@@ -216,9 +159,9 @@ namespace ScreenBrightnessPlugin
         /// <param name="level">Target level, may not be a supported brightness level</param>
         internal void setBrightness(byte level)
         {
-            if (this.Supported)
+            int i = findLevelIndex(level, brightnessLevels);
+            if (brightnessMethods != null)
             {
-                int i = findLevelIndex(level, brightnessLevels);
                 brightnessMethods.InvokeMethod("WmiSetBrightness", new Object[] { 10, brightnessLevels[i] });
             }
         }
@@ -228,9 +171,7 @@ namespace ScreenBrightnessPlugin
         /// </summary>
         internal void syncBrightnessIndex()
         {
-            byte current = this.CurrentBrightness;
-            byte[] levels = this.brightnessLevels;
-            brightnessIndex = findLevelIndex(current, levels);
+            this.brightnessIndex = findLevelIndex(this.CurrentBrightness, this.brightnessLevels);
         }
 
         /// <summary>
@@ -244,7 +185,7 @@ namespace ScreenBrightnessPlugin
         {
             int closestIndex = 0;
             
-            if (this.Supported)
+            if (levels != null && levels.Length > 0)
             {
                 int maxIndex = levels.Length - 1;
                 byte minVal = levels[0];
@@ -286,7 +227,6 @@ namespace ScreenBrightnessPlugin
                     }
                 } 
             }
-
             return closestIndex;
         }
 
@@ -296,15 +236,10 @@ namespace ScreenBrightnessPlugin
         /// <returns>byte[] of supported brightness levels</returns>
         private byte[] getBrightnessLevels()
         {
-            if (this.Supported)
-            {
-                ManagementObject monitorInfo = getWmiObject("WmiMonitorBrightness");
-                return (byte[])(monitorInfo.GetPropertyValue("Level"));
-            }
-            else
-            {
-                return new byte[] { 0 };
-            }
+            ManagementObject monitorInfo = getWmiObject("WmiMonitorBrightness");
+            return (monitorInfo == null ? 
+                new byte[] { 0 } : 
+                (byte[])(monitorInfo.GetPropertyValue("Level")));
         }
 
         /// <summary>
